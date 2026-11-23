@@ -1,0 +1,142 @@
+Form { 
+      [TABLES] 
+      ImpTable =;;;; Master; 3; 0 
+ 
+      [ImpTable] 
+      vMess=16;64000;0;1;1;Transfer messages...;;;; 
+      vExcelFile=1;4000;1;1;0;Excel file;$Filename;;;
+			vVat=3;10;1;1;0;Vat Category;VAT;;;1410;
+      vDBTable=1;64;1;1;0;TableName;;;;CCCMYEXCEL 
+      vDrop=2;15;1;1;0;Drop and Create Table;$Y;;1; 
+      vInsRec=2;15;1;1;0;Insert Records;$Y;;1; 
+ 
+      [PANELS] 
+      PANEL10=0;;0;50,G10,N 
+      PANEL13=4;Transfer  messages...;0;100,G10,N,L3,H50
+ 
+      [PANEL10] 
+      ImpTable.vExcelFile
+			ImpTable.vVat
+      ImpTable.vDBTable 
+      ImpTable.vDrop 
+      ImpTable.vInsRec 
+ 
+      [PANEL13] 
+      ImpTable.vMess 
+      }
+			
+Import myImp() into 'LINSUPDOC, WARNINGS:OFF, NOMESSAGES:1'
+				{
+				}
+
+Converter GetFindocId (FINDOC, 'COMPANY;FINCODE;TRDR;TRNDATE', FINDOC);
+Converter GetSupplierId (TRDR, 'COMPANY;SODTYPE=12;AFM', TRDR);
+Converter GetCostCenterId (COSTCNTR, 'COMPANY;COSTCNTR', COSTCNTR);
+
+Connect Xplorer SoftOne {
+												 connect();
+												 
+												 sInvoice = SELECT 
+																						[TRNDATE] AS TRNDATE,
+																						[INVOICE] AS INVOICE,
+																						[SUPPLIERAFM] AS SUPPLIERAFM,
+																						[TOTAL] AS TOTALVALUE,
+																						[FPA] AS FPA
+																						
+																		FROM $REMOVEQUOTES(:$ImpTable.vDBTable);
+												}
+include 'ModuleIntf';
+var vError, vMess, vTot, vRow, vRowCancel, vCurRec;
+
+var cmpfincode, afm, trndate, totalvalue, suppId, d, x, findocId;
+
+var fModule, dsLinsupdoc, dsLines, code, oldval, fpa;
+{
+	vError = 0;
+	vMess = '';
+	if (vError=0)
+		{
+			vMess = '============ JOB START ============' +#13+#10+#13+#10;
+			x = SendResponse(vTot, vRow, vRowCancel, 'Start Job...', vMess,
+												'RESULTS.TOTREC;RESULTS.CURREC;RESULTS.CANREC;RESULTS.LABELTEXT;ImpTable.vMess');
+			//>>>======= Transfer Excel to SQL Table - Table initialization ======= 
+			if (:ImpTable.vDrop = 1)
+				{
+					x = SafeExecSQL('SoftOne', 'DROP TABLE ' + :ImpTable.vDBTable, Null);
+					x = CallPublished('SysRequest.Evaluate', VarArray(ImportModule('myImp'), 'ExcelImport('+#39+:ImpTable.vExcelFile+#39+','+#39+:ImpTable.vDBTable+#39+',1,2)',2));
+			//<<<======= Transfer Excel to SQL Table - Table Initialization ======= 		
+				}
+			//>>>======== Update the cost centers ==========
+			vCurRec = 0;
+			vTot = 0;
+			vRowCancel = 0;
+			fetch sInvoice vTot = vTot +1;
+			x = SendResponse(vTot, 0, 0, 'RESULTS.TOTREC;RESULTS.CURREC;RESULTS.CANREC');
+			vMess = vMess + 'A. FPA UPDATE...'+#13+#10;
+			x = SendResponse(vMess, 'Vat Values Update...', 'ImpTable.vMess;RESULTS.LABELTEXT');
+			
+			fetch sInvoice{
+												if (:ImpTable.vInsRec = 1)
+												{
+														vCurRec = vCurRec + 1;	
+														
+														cmpfincode = sInvoice.INVOICE;
+														afm = sInvoice.SUPPLIERAFM;
+														trndate = sInvoice.TRNDATE;
+														d = strtodate(trndate, 'dd/mm/yyyy');
+														totalvalue = strtoFloat(sInvoice.TOTALVALUE);
+														fpa = StrtoFloat(sInvoice.FPA);
+														
+														suppId = GetSupplierId(:X.SYS.COMPANY, afm);
+														findocId = GetFindocId(:X.SYS.COMPANY, cmpfincode, suppId, d);
+														
+														if (suppId <> null AND findocId <> null)
+														{
+															fModule = CreateModule('LINSUPDOC, WARNINGS:OFF, NOMESSAGES:1');
+															dsLinsupdoc = GetDataset(fModule, 'LINSUPDOC');
+															x = LocateModule(fModule, findocId);
+															dsLines = GetDataset(fModule, 'VATANAL');
+															vMess = vMess +#9+ 'Update of Invoice: ' + cmpfincode +', Supplier: ' + afm +#13+#10;
+															
+															while (DatasetEof(dsLines)=0)
+															{
+																code = getfieldvalue(dsLines, 'VAT');
+																oldval = getfieldvalue(dsLines, 'VATVAL');
+																if (code = :ImpTable.vVat and (fpa <> oldval)){
+																									x = DatasetEdit(dsLines);
+																									x = SetFieldValue(dsLines, 'VATVAL', fpa);
+																									x = DatasetPost(dsLines);
+																									vMess = vMess +#9+#9 + 'FPA changed from ' + VarToStr(oldval) + ' to ' + VartoStr(fpa)+#13+#10;
+																								}
+																if (fpa = oldval){
+																									vMess = vMess +#9+#9 + 'FPA did not need change, value is: ' + VarToStr(oldval)+#13+#10;
+																}
+																x = DatasetNext(dsLines);
+															}
+															x = PostModule(fModule);
+															x = DestroyModule(fModule);
+															
+														}
+														else
+														{
+															vRowCancel = vRowCancel + 1;
+															vMess = vMess + #9 + 'Invoice Cancel: ' + cmpfincode +', Supplier: ' + afm + '================' +#13+#10;
+														}
+														x = SendResponse(vTot, vCurRec, vRowCancel, vMess, 'RESULTS.TOTREC;RESULTS.CURREC;RESULTS.CANREC;ImpTable.vMess' ); 
+												}
+										}
+			vMess = vMess + '- FPA UPDATE COMPLETION'+#13+#10+#13+#10; 
+			x = SendResponse(vTot, vCurRec, vRowCancel, vMess,'RESULTS.TOTREC;RESULTS.CURREC;RESULTS.CANREC;ImpTable.vMess' ); 
+			//<<<============  Update the cost centers ================
+		}
+}
+
+connect Xplorer Softone {
+  connect();
+}
+
+{
+  var x;
+  x = ExecSQL('Softone', 'DROP TABLE ' + :ImpTable.vDBTable, Null);
+}
+												
